@@ -303,8 +303,7 @@ def pull_git_tree(user, repository, branch='main', token=''):
 def pull(filepath, raw_url, token=''):
     """Download a single file from GitHub and write it to the device."""
     r = urequests.get(raw_url, headers=_headers(token))
-    data = r.content
-    r.close()
+
     # ensure parent directory exists
     parts = filepath.split('/')
     for i in range(1, len(parts)):
@@ -314,10 +313,56 @@ def pull(filepath, raw_url, token=''):
                 os.mkdir(d)
             except:
                 pass
-    f = open(filepath, 'wb')
-    f.write(data)
-    f.close()
-    return data
+
+    # Stream response to file in small chunks if possible to avoid
+    # holding the entire file in RAM (important on constrained devices).
+    total_written = 0
+    f = None
+    try:
+        f = open(filepath, 'wb')
+        # Prefer socket-level streaming if available
+        raw = getattr(r, 'raw', None)
+        if raw is not None:
+            while True:
+                chunk = raw.read(1024)
+                if not chunk:
+                    break
+                f.write(chunk)
+                total_written += len(chunk)
+                # Occasionally free memory
+                try:
+                    gc.collect()
+                except Exception:
+                    pass
+        else:
+            # Fallback: some urequests implementations expose .content
+            try:
+                data = r.content
+                if data:
+                    f.write(data)
+                    total_written = len(data)
+            except Exception:
+                # Final fallback: use .read()
+                try:
+                    data = r.read()
+                    if data:
+                        f.write(data)
+                        total_written = len(data)
+                except Exception:
+                    pass
+    finally:
+        try:
+            if r:
+                r.close()
+        except Exception:
+            pass
+        try:
+            if f:
+                f.close()
+        except Exception:
+            pass
+
+    return total_written
 
 
 def pull_all(user=None, repository=None, branch=None, token=None,
