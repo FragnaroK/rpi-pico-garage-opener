@@ -5,22 +5,11 @@ from umqtt.simple import MQTTClient
 import config
 import gc
 import random
-# Lazy import of picozero's pico_led to avoid loading the whole library
-# at module import time (saves RAM on startup).
-pico_led = None
-
-def _ensure_pico_led():
-    global pico_led
-    if pico_led is None:
-        try:
-            from picozero import pico_led as _pico_led
-            pico_led = _pico_led
-        except Exception:
-            pico_led = None
 from error_logger import error_log
 from memory_monitor import memory_monitor
 import mqtt_manager
 import lib.ugit.ugit as ugit
+from lib.led import led
 
 # --- MQTT Topics base
 
@@ -77,9 +66,6 @@ def get_jitter(max_jitter_seconds=3):
 
 def connect_wifi():
     try:
-        _ensure_pico_led()
-        if pico_led:
-            pico_led.blink(on_time=1)
         wlan = network.WLAN(network.STA_IF)
         wlan.active(True)
         wlan.config(pm = 0xa11140)
@@ -94,25 +80,19 @@ def connect_wifi():
 
         if wlan.status() != 3:
             error_log.log_error("WIFI", "Failed to connect to WiFi")
-            pico_led.blink(on_time=3, wait=True, n=3)
+            led.blink(on_time=3, wait=True, n=3)
             raise RuntimeError('Network connection failed')
         else:
             error_log.log_error("WIFI", "Successfully connected to WiFi")
-            pico_led.blink(on_time=0.15, wait=True, n=3)
     except Exception as e:
         error_log.log_exception(e, "connect_wifi")
         raise
 
 def trigger_garage_door():
     try:
-        _ensure_pico_led()
-        if pico_led:
-            pico_led.on()
         trigger_pin.value(ACTIVE_LOW)
         sleep(PRESS_DURATION)
         trigger_pin.value(ACTIVE_HIGH)
-        if pico_led:
-            pico_led.off()
         error_log.log_error("GARAGE", "Garage door triggered successfully")
     except Exception as e:
         error_log.log_exception(e, "trigger_garage_door")
@@ -150,8 +130,15 @@ def connect_mqtt():
             )
             manager.set_callback(on_message)
 
-        # Try to connect via manager
-        disconnect_mqtt()
+        # If already connected, keep the existing connection open
+        if manager is not None and manager.is_connected():
+            error_log.log_error("MQTT", "Already connected, skip reconnect")
+            return True
+
+        # Only clean up if there is an existing client to tear down
+        if manager is not None and getattr(manager, 'client', None) is not None:
+            error_log.log_error("MQTT", "Cleaning up stale MQTT client before reconnect")
+            disconnect_mqtt()
         sleep(1)
         ok = manager.connect()
         if ok:
@@ -161,6 +148,7 @@ def connect_mqtt():
     except Exception as e:
         error_log.log_exception(e, "connect_mqtt")
         consecutive_mqtt_errors += 1
+        error_log.log_error("MQTT", "connect_mqtt failed", str(e))
         return False
 
 def on_message(topic, message):
@@ -320,13 +308,7 @@ def main():
                     
                     raise  # Re-raise to handle in outer except
                 
-                # Quick blink to show we're alive
-                _ensure_pico_led()
-                if pico_led:
-                    pico_led.on()
-                    sleep(0.1)
-                    pico_led.off()
-                sleep(0.9)
+                sleep(1)
                 
             except Exception as e:
                 error_log.log_exception(e, "message_check")
@@ -353,9 +335,7 @@ def main():
         error_log.log_exception(e, "main")
         memory_monitor.print_diagnostics()
         error_log.print_stats()
-        _ensure_pico_led()
-        if pico_led:
-            pico_led.blink(on_time=0.5, wait=True, n=10)
+        led.blink(on_time=0.5, wait=True, n=10)
 
 if __name__ == '__main__':
     main()

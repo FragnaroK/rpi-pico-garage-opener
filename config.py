@@ -14,7 +14,7 @@ GH_USER=config.get("GH_USER", "")
 GH_REPO=config.get("GH_REPO", "")
 GH_BRANCH=config.get("GH_BRANCH", "")
 
-MQTT_SERVER=config.get("MQTT_SERVER", "").encode()
+MQTT_SERVER=config.get("MQTT_SERVER", "")
 MQTT_USER=config.get("MQTT_USER", "").encode()
 MQTT_PASSWORD=config.get("MQTT_PASSWORD", "").encode()
 
