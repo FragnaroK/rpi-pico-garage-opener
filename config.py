@@ -11,9 +11,8 @@ WIFI_SSID=config.get("WIFI_SSID", "")
 WIFI_PASSWORD=config.get("WIFI_PASSWORD", "")
 
 GH_USER=config.get("GH_USER", "")
-G_REPO=config.get("G_REPO", "")
+GH_REPO=config.get("GH_REPO", "")
 GH_BRANCH=config.get("GH_BRANCH", "")
-# GH_TOKEN=config.get("GH_TOKEN")
 
 MQTT_SERVER=config.get("MQTT_SERVER", "").encode()
 MQTT_USER=config.get("MQTT_USER", "").encode()
@@ -31,12 +30,48 @@ if missing_vars:
 
 ignore_files=["/lib/ugit/ugit.py", "/.env"]
 
+def _normalize_repository(repo):
+    """Normalize repository input into a bare repository name.
+
+    Accepts values like:
+      - rpi-pico-garage-opener
+      - FragnaroK/rpi-pico-garage-opener
+      - git@github.com:FragnaroK/rpi-pico-garage-opener.git
+      - https://github.com/FragnaroK/rpi-pico-garage-opener.git
+
+    Returns the repo name portion: "rpi-pico-garage-opener".
+    """
+    if not repo:
+        return ''
+    s = repo.strip()
+    # SSH form: git@github.com:owner/repo.git
+    if s.startswith('git@') and ':' in s:
+        s = s.split(':', 1)[1]
+    # HTTP(S) form: https://github.com/owner/repo(.git)
+    if s.startswith('http'):
+        # drop protocol and domain
+        parts = s.split('/')
+        if len(parts) >= 2:
+            # last two parts are owner and repo
+            s = '/'.join(parts[-2:])
+    # strip trailing .git
+    if s.endswith('.git'):
+        s = s[:-4]
+    # if owner/repo, return repo part
+    if '/' in s:
+        return s.split('/')[-1]
+    return s
+
+
+repo_name = _normalize_repository(GH_REPO)
+
+print('Will write config for user=%s, repository=%s, branch=%s' % (GH_USER, repo_name, GH_BRANCH))
+
 ugit.create_config(
     ssid=WIFI_SSID,
     password=WIFI_PASSWORD,
     user=GH_USER,
-    repository=G_REPO,
+    repository=repo_name,
     branch=GH_BRANCH,
     ignore=ignore_files
-    # token=GH_TOKEN  # optional: GitHub personal access token for private repos
 )
