@@ -4,28 +4,33 @@ import network
 from umqtt.simple import MQTTClient
 import config
 import gc
+import random
 from picozero import pico_led
 from error_logger import error_log
 from memory_monitor import memory_monitor
+import mqtt_manager
+import lib.ugit.ugit as ugit
 
-# --- Constants for MQTT Topics
-MQTT_TOPIC_GARAGE = b'pico/garage'
+# --- MQTT Topics base
 
 # --- MQTT Parameters
 MQTT_SERVER = config.MQTT_SERVER
 MQTT_PORT = 1883
-MQTT_USER = config.MQTT_USERNAME
+MQTT_USER = config.MQTT_USER
 MQTT_PASSWORD = config.MQTT_PASSWORD
 MQTT_CLIENT_ID = b"raspberrypi_picow"
 MQTT_KEEPALIVE = 60
 MQTT_SSL = False
 MQTT_SSL_PARAMS = {'server_hostname': MQTT_SERVER}
+MQTT_TOPIC_BASE = b'pico/garage'
+MQTT_TOPIC_OTA = MQTT_TOPIC_BASE + b'/ota'
+MQTT_TOPIC_STATUS = MQTT_TOPIC_BASE + b'/status'
 
 # --- Constants
-RELAY_PIN = const(16)
-PRESS_DURATION = const(0.5)
-ACTIVE_LOW = const(0)
-ACTIVE_HIGH = const(1)
+RELAY_PIN = 21
+PRESS_DURATION = 0.5
+ACTIVE_LOW = 0
+ACTIVE_HIGH = 1
 
 # Memory management settings
 GC_COLLECT_INTERVAL = 30
@@ -39,12 +44,25 @@ trigger_pin = machine.Pin(RELAY_PIN, machine.Pin.OUT, value=ACTIVE_HIGH)
 
 # Global variables
 client = None
+manager = None
 last_message_time = time()
 last_gc_time = time()
 RECONNECT_INTERVAL = 30
 message_history = []
 consecutive_mqtt_errors = 0
 mqtt_reconnect_backoff = MQTT_RECONNECT_BACKOFF_INIT
+wdt = None
+
+WATCHDOG_TIMEOUT_MS = 15000
+# Some ports limit the WDT maximum timeout (RP2 reports ~8388 ms).
+MAX_WDT_TIMEOUT_MS = 8388
+
+def get_jitter(max_jitter_seconds=3):
+    """Return a small jitter value in seconds. Works without `random` if needed."""
+    try:
+        return random.randint(0, max_jitter_seconds)
+    except Exception:
+        return int(time()) % (max_jitter_seconds + 1)
 
 def connect_wifi():
     try:
@@ -87,9 +105,11 @@ def disconnect_mqtt():
     """Safely disconnect MQTT client and cleanup"""
     global client
     try:
-        if client:
+        if manager:
             error_log.log_error("MQTT", "Disconnecting from MQTT broker")
-            client.disconnect()  # This now calls gc.collect() internally
+            manager.disconnect()
+            # keep client reference in sync
+            client = None
     except Exception as e:
         error_log.log_exception(e, "disconnect_mqtt")
     finally:
@@ -97,34 +117,31 @@ def disconnect_mqtt():
         gc.collect()  # Extra GC to be safe
 
 def connect_mqtt():
-    global client, consecutive_mqtt_errors
+    global client, consecutive_mqtt_errors, manager
     try:
-        # Clean disconnect before reconnecting
+        # Initialize manager if needed
+        if manager is None:
+            manager = mqtt_manager.MQTTManager(
+                client_id=MQTT_CLIENT_ID,
+                server=MQTT_SERVER,
+                port=MQTT_PORT,
+                user=MQTT_USER,
+                password=MQTT_PASSWORD,
+                keepalive=MQTT_KEEPALIVE,
+                ssl=MQTT_SSL,
+                ssl_params=MQTT_SSL_PARAMS,
+                topic_base=MQTT_TOPIC_BASE,
+            )
+            manager.set_callback(on_message)
+
+        # Try to connect via manager
         disconnect_mqtt()
-        sleep(1)  # Wait for OS to reclaim socket resources
-        
-        error_log.log_error("MQTT", "Creating new MQTT client")
-        client = MQTTClient(
-            client_id=MQTT_CLIENT_ID,
-            server=MQTT_SERVER,
-            port=MQTT_PORT,
-            user=MQTT_USER,
-            password=MQTT_PASSWORD,
-            keepalive=MQTT_KEEPALIVE,
-            ssl=MQTT_SSL,
-            ssl_params=MQTT_SSL_PARAMS
-        )
-        client.set_callback(on_message)
-        
-        error_log.log_error("MQTT", "Connecting to MQTT broker")
-        client.connect()
-        
-        error_log.log_error("MQTT", "Subscribing to topics")
-        client.subscribe(MQTT_TOPIC_GARAGE)
-        
-        error_log.log_error("MQTT", "Successfully connected to MQTT broker")
-        consecutive_mqtt_errors = 0
-        return True
+        sleep(1)
+        ok = manager.connect()
+        if ok:
+            client = manager.client
+            consecutive_mqtt_errors = 0
+        return ok
     except Exception as e:
         error_log.log_exception(e, "connect_mqtt")
         consecutive_mqtt_errors += 1
@@ -142,9 +159,41 @@ def on_message(topic, message):
         
         error_log.log_error("MQTT", f"Message received on {topic}", f"payload: {message}")
         
-        if topic == MQTT_TOPIC_GARAGE and message == b'TRIGGER':
+        # Trigger command
+        if topic == MQTT_TOPIC_BASE and message == b'TRIGGER':
             error_log.log_error("GARAGE", "Garage door trigger command received")
             trigger_garage_door()
+        # OTA trigger (pico/garage/ota)
+        elif topic == MQTT_TOPIC_OTA:
+            error_log.log_error("OTA", "OTA trigger received via MQTT")
+            try:
+                # Require explicit payload 'UPDATE' to avoid accidental OTA
+                if isinstance(message, bytes) and message.strip().upper() == b'UPDATE':
+                    # publish status ack (best-effort)
+                    try:
+                        if manager and manager.is_connected():
+                            manager.publish(MQTT_TOPIC_STATUS, b'OTA_STARTED')
+                    except Exception:
+                        pass
+
+                    # Start OTA (this will reset device on success)
+                    def _notify_complete():
+                        try:
+                            if manager and manager.is_connected():
+                                manager.publish(MQTT_TOPIC_STATUS, b'OTA_COMPLETED')
+                        except Exception:
+                            pass
+
+                    ugit.safe_pull_all(isconnected=True, reset_after=True, on_complete=_notify_complete)
+                else:
+                    error_log.log_error("OTA", "Ignored OTA request: wrong payload", f"payload: {message}")
+            except Exception as e:
+                error_log.log_exception(e, "mqtt_ota")
+                try:
+                    if manager and manager.is_connected():
+                        manager.publish(MQTT_TOPIC_STATUS, b'OTA_FAILED')
+                except Exception:
+                    pass
         else:
             error_log.log_error("MQTT", "Unknown command received", f"topic: {topic}, msg: {message}")
     except Exception as e:
@@ -161,6 +210,7 @@ def is_network_available():
 def manage_memory(current_time):
     """Periodically collect garbage and monitor memory"""
     global last_gc_time
+    global wdt
     
     if current_time - last_gc_time > GC_COLLECT_INTERVAL:
         gc.collect()
@@ -169,8 +219,16 @@ def manage_memory(current_time):
     
     memory_monitor.check_memory(current_time)
 
+    # Feed the hardware watchdog if enabled
+    try:
+        if wdt is not None:
+            wdt.feed()
+    except Exception:
+        pass
+
 def main():
     global client, last_message_time, last_gc_time, consecutive_mqtt_errors, mqtt_reconnect_backoff
+    global wdt
     
     try:
         error_log.log_error("STARTUP", "Application starting")
@@ -183,6 +241,27 @@ def main():
         
         if not connect_mqtt():
             raise RuntimeError('Failed to connect to MQTT')
+
+        # Initialize hardware watchdog to help recover from hangs
+        try:
+            wdt_timeout = WATCHDOG_TIMEOUT_MS
+            if WATCHDOG_TIMEOUT_MS > MAX_WDT_TIMEOUT_MS:
+                error_log.log_error("WATCHDOG", f"Requested WDT timeout {WATCHDOG_TIMEOUT_MS}ms exceeds max {MAX_WDT_TIMEOUT_MS}ms; clamping to {MAX_WDT_TIMEOUT_MS}ms")
+                wdt_timeout = MAX_WDT_TIMEOUT_MS
+
+            try:
+                wdt = machine.WDT(timeout=wdt_timeout)
+                error_log.log_error("WATCHDOG", f"WDT started ({wdt_timeout}ms)")
+            except ValueError:
+                # Some ports raise ValueError for too-large timeouts; try a safe fallback
+                try:
+                    wdt = machine.WDT(timeout=MAX_WDT_TIMEOUT_MS)
+                    error_log.log_error("WATCHDOG", f"WDT started with fallback timeout ({MAX_WDT_TIMEOUT_MS}ms)")
+                except Exception as e:
+                    error_log.log_exception(e, "init_wdt")
+                    wdt = None
+        except Exception as e:
+            error_log.log_exception(e, "init_wdt")
         
         last_reconnect_attempt = time()
         last_gc_time = time()
@@ -207,10 +286,10 @@ def main():
                 
                 # Check for incoming messages
                 try:
-                    if client is None:
+                    if manager is None or not manager.is_connected():
                         raise OSError(-1)  # Force reconnect if client is None
-                    
-                    client.check_msg()
+
+                    manager.check_msg()
                     last_message_time = current_time
                     consecutive_mqtt_errors = 0
                 except OSError as e:
@@ -244,8 +323,11 @@ def main():
                         error_log.log_error("MQTT", "Reconnection successful")
                     else:
                         last_reconnect_attempt = current_time
+                        # exponential backoff plus small jitter to avoid thundering herds
                         mqtt_reconnect_backoff = min(mqtt_reconnect_backoff * 2, MQTT_RECONNECT_BACKOFF_MAX)
-                        error_log.log_error("MQTT", f"Reconnection failed, next attempt in {mqtt_reconnect_backoff}s")
+                        jitter = get_jitter(3)
+                        mqtt_reconnect_backoff = mqtt_reconnect_backoff + jitter
+                        error_log.log_error("MQTT", f"Reconnection failed, next attempt in {mqtt_reconnect_backoff}s (jitter {jitter}s)")
                 
                 sleep(1)
                 
