@@ -323,8 +323,10 @@ def pull(filepath, raw_url, token=''):
         # Prefer socket-level streaming if available
         raw = getattr(r, 'raw', None)
         if raw is not None:
+            # Read in small chunks to avoid large peak allocations on
+            # constrained devices (reduce from 1KB to 256B).
             while True:
-                chunk = raw.read(1024)
+                chunk = raw.read(256)
                 if not chunk:
                     break
                 f.write(chunk)

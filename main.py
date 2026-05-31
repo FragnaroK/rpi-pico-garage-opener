@@ -5,7 +5,18 @@ from umqtt.simple import MQTTClient
 import config
 import gc
 import random
-from picozero import pico_led
+# Lazy import of picozero's pico_led to avoid loading the whole library
+# at module import time (saves RAM on startup).
+pico_led = None
+
+def _ensure_pico_led():
+    global pico_led
+    if pico_led is None:
+        try:
+            from picozero import pico_led as _pico_led
+            pico_led = _pico_led
+        except Exception:
+            pico_led = None
 from error_logger import error_log
 from memory_monitor import memory_monitor
 import mqtt_manager
@@ -66,7 +77,9 @@ def get_jitter(max_jitter_seconds=3):
 
 def connect_wifi():
     try:
-        pico_led.blink(on_time=1)
+        _ensure_pico_led()
+        if pico_led:
+            pico_led.blink(on_time=1)
         wlan = network.WLAN(network.STA_IF)
         wlan.active(True)
         wlan.config(pm = 0xa11140)
@@ -92,11 +105,14 @@ def connect_wifi():
 
 def trigger_garage_door():
     try:
-        pico_led.on()
+        _ensure_pico_led()
+        if pico_led:
+            pico_led.on()
         trigger_pin.value(ACTIVE_LOW)
         sleep(PRESS_DURATION)
         trigger_pin.value(ACTIVE_HIGH)
-        pico_led.off()
+        if pico_led:
+            pico_led.off()
         error_log.log_error("GARAGE", "Garage door triggered successfully")
     except Exception as e:
         error_log.log_exception(e, "trigger_garage_door")
@@ -184,7 +200,7 @@ def on_message(topic, message):
                         except Exception:
                             pass
 
-                    ugit.safe_pull_all(isconnected=True, reset_after=True, on_complete=_notify_complete)
+                    ugit.pull_all(isconnected=True, reset_after=True, on_complete=_notify_complete)
                 else:
                     error_log.log_error("OTA", "Ignored OTA request: wrong payload", f"payload: {message}")
             except Exception as e:
@@ -305,9 +321,11 @@ def main():
                     raise  # Re-raise to handle in outer except
                 
                 # Quick blink to show we're alive
-                pico_led.on()
-                sleep(0.1)
-                pico_led.off()
+                _ensure_pico_led()
+                if pico_led:
+                    pico_led.on()
+                    sleep(0.1)
+                    pico_led.off()
                 sleep(0.9)
                 
             except Exception as e:
@@ -335,7 +353,9 @@ def main():
         error_log.log_exception(e, "main")
         memory_monitor.print_diagnostics()
         error_log.print_stats()
-        pico_led.blink(on_time=0.5, wait=True, n=10)
+        _ensure_pico_led()
+        if pico_led:
+            pico_led.blink(on_time=0.5, wait=True, n=10)
 
 if __name__ == '__main__':
     main()
