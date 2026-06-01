@@ -1,1 +1,5 @@
 .env
+config.json
+error_log.txt
+error_log_dump.txt
+__pycache__

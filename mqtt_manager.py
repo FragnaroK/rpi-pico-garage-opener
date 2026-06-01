@@ -117,15 +117,19 @@ class MQTTManager:
     def check_msg(self):
         if not self.client or not getattr(self.client, 'sock', None):
             raise OSError(ERROR_NOT_CONNECTED)
-        sock = self.client.sock
-        if sock is None:
-            raise OSError(ERROR_NOT_CONNECTED)
-        sock.setblocking(False)
+
+        # Prefer non-blocking check_msg if available, otherwise fallback
+        # to wait_msg inside a safe try/except.
         try:
-            result = self.client.wait_msg()
-            return result
+            if hasattr(self.client, 'check_msg'):
+                return self.client.check_msg()
+            else:
+                return self.client.wait_msg()
         finally:
             self._send_keepalive_ping()
 
     def is_connected(self):
-        return self.client is not None and getattr(self.client, 'sock', None) is not None
+        try:
+            return self.client is not None and getattr(self.client, 'sock', None) is not None
+        except Exception:
+            return False
