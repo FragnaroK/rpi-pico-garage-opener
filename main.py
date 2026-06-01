@@ -360,12 +360,31 @@ def main():
 
     except Exception as e:
         error_log.log_exception(e, "main")
+        error_log.log_error("CRITICAL", "Entering error handler - attempting LED blink")
         memory_monitor.print_diagnostics()
         error_log.print_stats()
-        led_scheduler.start_pattern("error")
-        while True:
-            led_scheduler.update()
-            sleep(0.1)
+        
+        # Try scheduler first, with direct LED fallback
+        try:
+            led_scheduler.start_pattern("error")
+            while True:
+                led_scheduler.update()
+                sleep(0.1)
+        except Exception as sched_err:
+            error_log.log_exception(sched_err, "led_scheduler_failure")
+            # Direct LED control as fallback
+            error_log.log_error("CRITICAL", "LED scheduler failed, using direct LED control")
+            try:
+                while True:
+                    led.on()
+                    sleep(0.5)
+                    led.off()
+                    sleep(0.5)
+            except Exception as led_err:
+                error_log.log_exception(led_err, "led_direct_failure")
+                # Give up - just hang
+                while True:
+                    sleep(1)
 
 if __name__ == '__main__':
     main()

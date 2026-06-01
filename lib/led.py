@@ -1,10 +1,8 @@
 import machine
 from time import sleep
 
-LED_PIN = 25
-
 class LED:
-    def __init__(self, pin=LED_PIN):
+    def __init__(self, pin="LED"):
         self._pin = machine.Pin(pin, machine.Pin.OUT)
         self.off()
 

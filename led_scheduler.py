@@ -17,19 +17,19 @@ class LEDScheduler:
 
     def _pattern_boot(self, elapsed):
         """Boot pattern: two fast pulses."""
-        cycle = 0.5
+        cycle_time = 1.0  # Full on+off cycle = 1 second (0.5 on, 0.5 off)
         pattern_duration = 2.0
         if elapsed > pattern_duration:
             return False
-        phase = int((elapsed % cycle) / cycle)
+        phase = int((elapsed % cycle_time) * 2)  # 0 = on, 1 = off
         led.on() if phase == 0 else led.off()
         return True
 
     def _pattern_wifi_connecting(self):
         """WiFi connecting: steady blink (1s on, 1s off)."""
         elapsed = time.time() - self.pattern_start_time
-        cycle = 2.0
-        phase = int((elapsed % cycle) / cycle)
+        cycle_time = 2.0  # 1s on + 1s off = 2s total
+        phase = int((elapsed % cycle_time) * 0.5)  # 0 = on, 1 = off
         led.on() if phase == 0 else led.off()
         return True  # Runs indefinitely until cancelled
 
@@ -68,24 +68,24 @@ class LEDScheduler:
         if elapsed > pattern_duration:
             led.off()
             return False
-        cycle = 0.3
-        phase = int((elapsed % cycle) / cycle)
+        cycle_time = 0.3  # 0.15s on, 0.15s off
+        phase = int((elapsed % cycle_time) * 2)  # 0 = on, 1 = off
         led.on() if phase == 0 else led.off()
         return True
 
     def _pattern_ota(self):
         """OTA in progress: fast on-off blink."""
         elapsed = time.time() - self.pattern_start_time
-        cycle = 0.2
-        phase = int((elapsed % cycle) / cycle)
+        cycle_time = 0.2  # 0.1s on, 0.1s off
+        phase = int((elapsed % cycle_time) * 2)  # 0 = on, 1 = off
         led.on() if phase == 0 else led.off()
         return True  # Runs until cancelled
 
     def _pattern_error(self):
         """Error state: slow ominous blink."""
         elapsed = time.time() - self.pattern_start_time
-        cycle = 1.0
-        phase = int((elapsed % cycle) / cycle)
+        cycle_time = 1.0  # 0.5s on, 0.5s off
+        phase = int((elapsed % cycle_time) * 2)  # 0 = on, 1 = off
         led.on() if phase == 0 else led.off()
         return True  # Runs indefinitely until cancelled
 
