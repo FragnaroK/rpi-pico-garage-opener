@@ -89,6 +89,17 @@ class LEDScheduler:
         led.on() if phase == 0 else led.off()
         return True  # Runs indefinitely until cancelled
 
+    def _pattern_ready(self):
+        """Ready/idle: single short pulse periodically to indicate liveness."""
+        elapsed = time.time() - self.pattern_start_time
+        cycle_time = 10.0  # one pulse every 10 seconds
+        on_time = 0.2
+        if (elapsed % cycle_time) < on_time:
+            led.on()
+        else:
+            led.off()
+        return True
+
     def start_pattern(self, pattern_name):
         """Start a non-blocking LED pattern by name."""
         self.active_pattern = pattern_name
@@ -122,6 +133,8 @@ class LEDScheduler:
             keep_running = self._pattern_ota()
         elif self.active_pattern == "error":
             keep_running = self._pattern_error()
+        elif self.active_pattern == "ready":
+            keep_running = self._pattern_ready()
         else:
             keep_running = False
 

@@ -148,7 +148,7 @@ def connect_mqtt():
         if ok:
             client = manager.client
             consecutive_mqtt_errors = 0
-            led_scheduler.start_pattern("mqtt_connected")
+            led_scheduler.start_pattern("ready")
         else:
             led_scheduler.start_pattern("mqtt_error")
         return ok
