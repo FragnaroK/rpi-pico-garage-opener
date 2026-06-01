@@ -10,6 +10,7 @@ from memory_monitor import memory_monitor
 import mqtt_manager
 import lib.ugit.ugit as ugit
 from lib.led import led
+from led_scheduler import led_scheduler
 
 # --- MQTT Topics base
 
@@ -72,21 +73,25 @@ def connect_wifi(timeout=30):
 
         if wlan.isconnected():
             error_log.log_error("WIFI", "WiFi already connected")
+            led_scheduler.start_pattern("wifi_connected")
             return
 
+        led_scheduler.start_pattern("wifi_connecting")
         wlan.config(pm=0xa11140)
         wlan.connect(config.WIFI_SSID, config.WIFI_PASSWORD)
 
         start = time()
         while not wlan.isconnected() and time() - start < timeout:
+            led_scheduler.update()
             sleep(1)
 
         if not wlan.isconnected():
             error_log.log_error("WIFI", "Failed to connect to WiFi")
-            led.blink(on_time=1, off_time=1, n=3, wait=True)
+            led_scheduler.start_pattern("error")
             raise RuntimeError('Network connection failed')
 
         error_log.log_error("WIFI", "Successfully connected to WiFi")
+        led_scheduler.start_pattern("wifi_connected")
     except Exception as e:
         error_log.log_exception(e, "connect_wifi")
         raise
@@ -143,9 +148,13 @@ def connect_mqtt():
         if ok:
             client = manager.client
             consecutive_mqtt_errors = 0
+            led_scheduler.start_pattern("mqtt_connected")
+        else:
+            led_scheduler.start_pattern("mqtt_error")
         return ok
     except Exception as e:
         consecutive_mqtt_errors += 1
+        led_scheduler.start_pattern("mqtt_error")
         error_log.log_exception(e, "connect_mqtt")
         error_log.log_error("MQTT", "connect_mqtt failed", str(e))
         return False
@@ -164,15 +173,19 @@ def _handle_ota_request(message):
             error_log.log_error("OTA", "Ignored OTA request: wrong payload", f"payload: {message}")
             return
 
+        led_scheduler.start_pattern("ota")
         _publish_mqtt_status(MQTT_TOPIC_STATUS, b'OTA_STARTED')
 
         def _notify_complete():
             _publish_mqtt_status(MQTT_TOPIC_STATUS, b'OTA_COMPLETED')
+            led_scheduler.stop_pattern()
+            led.off()
 
         ugit.pull_all(isconnected=True, reset_after=True, on_complete=_notify_complete)
     except Exception as e:
         error_log.log_exception(e, "mqtt_ota")
         _publish_mqtt_status(MQTT_TOPIC_STATUS, b'OTA_FAILED')
+        led_scheduler.start_pattern("error")
 
 
 def on_message(topic, message):
@@ -261,6 +274,7 @@ def main():
     global wdt
     
     try:
+        led_scheduler.start_pattern("boot")
         error_log.log_error("STARTUP", "Application starting")
         error_log.print_stats()
         memory_monitor.print_diagnostics()
@@ -302,9 +316,11 @@ def main():
         while True:
             try:
                 current_time = time()
+                led_scheduler.update()
 
                 if not is_network_available():
                     error_log.log_error("WIFI", "WiFi connection lost, reconnecting...")
+                    led_scheduler.start_pattern("wifi_connecting")
                     disconnect_mqtt()
                     connect_wifi()
                     if not connect_mqtt():
@@ -324,7 +340,10 @@ def main():
                         consecutive_mqtt_errors = 0
                     raise
 
-                sleep(1)
+                # Sleep 1 second while keeping LED scheduler active
+                for _ in range(10):
+                    led_scheduler.update()
+                    sleep(0.1)
 
             except Exception as e:
                 error_log.log_exception(e, "message_check")
@@ -334,13 +353,19 @@ def main():
                     last_reconnect_attempt,
                     mqtt_reconnect_backoff,
                 )
-                sleep(1)
+                # Sleep with scheduler updates
+                for _ in range(10):
+                    led_scheduler.update()
+                    sleep(0.1)
 
     except Exception as e:
         error_log.log_exception(e, "main")
         memory_monitor.print_diagnostics()
         error_log.print_stats()
-        led.blink(on_time=1, wait=True, n=10)
+        led_scheduler.start_pattern("error")
+        while True:
+            led_scheduler.update()
+            sleep(0.1)
 
 if __name__ == '__main__':
     main()
