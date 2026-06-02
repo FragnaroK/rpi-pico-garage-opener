@@ -181,6 +181,7 @@ def _handle_ota_request(message):
 
         led_scheduler.start_pattern(LED_OTA)
         _publish_mqtt_status(MQTT_TOPIC_STATUS, b'OTA_STARTED')
+        gc.collect()
 
         def _notify_complete():
             _publish_mqtt_status(MQTT_TOPIC_STATUS, b'OTA_COMPLETED')

@@ -413,6 +413,22 @@ def pull_all(user=None, repository=None, branch=None, token=None,
     local_tree = _build_internal_tree()
 
     log = []
+    log_limit = 32
+    log_file = None
+    try:
+        log_file = open('/ugit_log.txt', 'w')
+    except Exception:
+        log_file = None
+
+    def append_log(line):
+        if log_file:
+            try:
+                log_file.write(line + '\n')
+            except Exception:
+                pass
+        if len(log) < log_limit:
+            log.append(line)
+
     updated = 0
     skipped = 0
     deleted = 0
@@ -443,17 +459,17 @@ def pull_all(user=None, repository=None, branch=None, token=None,
 
         if git_sha and local_sha and git_sha == local_sha:
             skipped += 1
-            log.append(path + ' unchanged')
+            append_log(path + ' unchanged')
             continue
 
         # download the file
         try:
             pull(path, raw_base + item['path'], c['token'])
             updated += 1
-            log.append(path + ' updated')
+            append_log(path + ' updated')
             print('  updated:', path)
         except Exception as e:
-            log.append(path + ' FAILED: ' + str(e))
+            append_log(path + ' FAILED: ' + str(e))
             print('  FAILED:', path, e)
 
     # delete local files not in the repo (except ignored)
@@ -462,20 +478,21 @@ def pull_all(user=None, repository=None, branch=None, token=None,
             try:
                 os.remove(local_path)
                 deleted += 1
-                log.append(local_path + ' deleted')
+                append_log(local_path + ' deleted')
                 print('  deleted:', local_path)
             except:
-                log.append(local_path + ' delete failed')
+                append_log(local_path + ' delete failed')
 
     # write log
     summary = 'ugit: %d updated, %d skipped, %d deleted' % (updated, skipped, deleted)
     print(summary)
+    if len(log) >= log_limit:
+        append_log('...more log entries not stored in memory...')
     log.insert(0, summary)
     try:
-        f = open('/ugit_log.txt', 'w')
-        f.write('\n'.join(log))
-        f.close()
-    except:
+        if log_file:
+            log_file.close()
+    except Exception:
         pass
 
     # call completion callback (if provided) before reset
