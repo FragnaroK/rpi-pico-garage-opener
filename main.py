@@ -188,7 +188,7 @@ def _handle_ota_request(message):
             led_scheduler.stop_pattern()
             led.off()
 
-        ugit.pull_all(isconnected=True, reset_after=True, on_complete=_notify_complete)
+        ugit.safe_pull_all(isconnected=True, reset_after=True, on_complete=_notify_complete)
     except Exception as e:
         error_log.log_exception(e, "mqtt_ota")
         _publish_mqtt_status(MQTT_TOPIC_STATUS, b'OTA_FAILED')
