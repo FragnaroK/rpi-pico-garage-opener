@@ -33,9 +33,17 @@ PRESS_DURATION = 0.5
 ACTIVE_LOW = 0
 ACTIVE_HIGH = 1
 
-# Memory management settings
-GC_COLLECT_INTERVAL = 30
-MESSAGE_BUFFER_MAX = 10
+# LED Pattern Constants (reused strings to save memory)
+LED_BOOT = "boot"
+LED_WIFI_CONNECTING = "wifi_connecting"
+LED_WIFI_CONNECTED = "wifi_connected"
+LED_READY = "ready"
+LED_MQTT_ERROR = "mqtt_error"
+LED_OTA = "ota"
+LED_ERROR = "error"
+
+# Memory management settings (optimized for constrained devices)
+GC_COLLECT_INTERVAL = 8  # Reduced from 30s for more aggressive GC
 MQTT_RECONNECT_BACKOFF_INIT = 5
 MQTT_RECONNECT_BACKOFF_MAX = 60
 MQTT_ERROR_THRESHOLD = 3
@@ -48,8 +56,6 @@ client = None
 manager = None
 last_message_time = time()
 last_gc_time = time()
-RECONNECT_INTERVAL = 30
-message_history = []
 consecutive_mqtt_errors = 0
 mqtt_reconnect_backoff = MQTT_RECONNECT_BACKOFF_INIT
 wdt = None
@@ -73,10 +79,10 @@ def connect_wifi(timeout=30):
 
         if wlan.isconnected():
             error_log.log_error("WIFI", "WiFi already connected")
-            led_scheduler.start_pattern("wifi_connected")
+            led_scheduler.start_pattern(LED_WIFI_CONNECTED)
             return
 
-        led_scheduler.start_pattern("wifi_connecting")
+        led_scheduler.start_pattern(LED_WIFI_CONNECTING)
         wlan.config(pm=0xa11140)
         wlan.connect(config.WIFI_SSID, config.WIFI_PASSWORD)
 
@@ -87,11 +93,11 @@ def connect_wifi(timeout=30):
 
         if not wlan.isconnected():
             error_log.log_error("WIFI", "Failed to connect to WiFi")
-            led_scheduler.start_pattern("error")
+            led_scheduler.start_pattern(LED_ERROR)
             raise RuntimeError('Network connection failed')
 
         error_log.log_error("WIFI", "Successfully connected to WiFi")
-        led_scheduler.start_pattern("wifi_connected")
+        led_scheduler.start_pattern(LED_WIFI_CONNECTED)
     except Exception as e:
         error_log.log_exception(e, "connect_wifi")
         raise
@@ -148,13 +154,13 @@ def connect_mqtt():
         if ok:
             client = manager.client
             consecutive_mqtt_errors = 0
-            led_scheduler.start_pattern("ready")
+            led_scheduler.start_pattern(LED_READY)
         else:
-            led_scheduler.start_pattern("mqtt_error")
+            led_scheduler.start_pattern(LED_MQTT_ERROR)
         return ok
     except Exception as e:
         consecutive_mqtt_errors += 1
-        led_scheduler.start_pattern("mqtt_error")
+        led_scheduler.start_pattern(LED_MQTT_ERROR)
         error_log.log_exception(e, "connect_mqtt")
         error_log.log_error("MQTT", "connect_mqtt failed", str(e))
         return False
@@ -173,7 +179,7 @@ def _handle_ota_request(message):
             error_log.log_error("OTA", "Ignored OTA request: wrong payload", f"payload: {message}")
             return
 
-        led_scheduler.start_pattern("ota")
+        led_scheduler.start_pattern(LED_OTA)
         _publish_mqtt_status(MQTT_TOPIC_STATUS, b'OTA_STARTED')
 
         def _notify_complete():
@@ -185,19 +191,14 @@ def _handle_ota_request(message):
     except Exception as e:
         error_log.log_exception(e, "mqtt_ota")
         _publish_mqtt_status(MQTT_TOPIC_STATUS, b'OTA_FAILED')
-        led_scheduler.start_pattern("error")
+        led_scheduler.start_pattern(LED_ERROR)
 
 
 def on_message(topic, message):
     """Handle incoming MQTT messages"""
-    global message_history
 
     try:
-        message_history.append({'topic': topic, 'msg': message, 'time': time()})
-        if len(message_history) > MESSAGE_BUFFER_MAX:
-            message_history.pop(0)
-
-        error_log.log_error("MQTT", f"Message received on {topic}", f"payload: {message}")
+        error_log.log_error("MQTT", "Message received", "incoming MQTT payload")
 
         if topic == MQTT_TOPIC_BASE and message == b'TRIGGER':
             error_log.log_error("GARAGE", "Garage door trigger command received")
@@ -206,7 +207,7 @@ def on_message(topic, message):
             error_log.log_error("OTA", "OTA trigger received via MQTT")
             _handle_ota_request(message)
         else:
-            error_log.log_error("MQTT", "Unknown command received", f"topic: {topic}, msg: {message}")
+            error_log.log_error("MQTT", "Unknown command received", "ignored MQTT payload")
     except Exception as e:
         error_log.log_exception(e, "on_message")
 
@@ -267,7 +268,7 @@ def _init_watchdog():
 def _handle_network_unavailable():
     """Handle WiFi disconnection and reconnection"""
     error_log.log_error("WIFI", "WiFi connection lost, reconnecting...")
-    led_scheduler.start_pattern("wifi_connecting")
+    led_scheduler.start_pattern(LED_WIFI_CONNECTING)
     disconnect_mqtt()
     connect_wifi()
     if not connect_mqtt():
@@ -295,10 +296,11 @@ def _run_main_loop():
                 _process_mqtt_cycle(current_time)
             except OSError as e:
                 consecutive_mqtt_errors += 1
-                error_log.log_error("MQTT_ERROR", f"OSError (count: {consecutive_mqtt_errors})", str(e))
+                error_log.log_error("MQTT_ERROR", "OSError count", str(consecutive_mqtt_errors))
                 if consecutive_mqtt_errors >= MQTT_ERROR_THRESHOLD:
                     error_log.log_error("MQTT", "Too many errors, forcing reconnect")
                     disconnect_mqtt()
+                    gc.collect()
                     consecutive_mqtt_errors = 0
                 raise
 
@@ -306,6 +308,7 @@ def _run_main_loop():
             for _ in range(10):
                 led_scheduler.update()
                 sleep(0.1)
+            gc.collect()  # Opportunistic GC after successful cycle
 
         except Exception as e:
             error_log.log_exception(e, "message_check")
@@ -315,6 +318,7 @@ def _run_main_loop():
                 last_reconnect_attempt,
                 mqtt_reconnect_backoff,
             )
+            gc.collect()  # GC after error to recover memory
             # Sleep with scheduler updates
             for _ in range(10):
                 led_scheduler.update()
@@ -329,7 +333,8 @@ def _handle_led_pattern(pattern_name):
             sleep(0.1)
     except Exception as sched_err:
         error_log.log_exception(sched_err, "led_scheduler_failure")
-        error_log.log_error("CRITICAL", "LED scheduler failed, using direct LED control")
+        error_log.log_error("CRITICAL", "LED scheduler failed; fallback LED")
+        gc.collect()  # Free memory before fallback
         _handle_direct_led()
 
 def _handle_direct_led():
@@ -349,10 +354,11 @@ def _handle_direct_led():
 def _handle_critical_error(e):
     """Handle critical errors during startup"""
     error_log.log_exception(e, "main")
-    error_log.log_error("CRITICAL", "Entering error handler - attempting LED blink")
+    error_log.log_error("CRITICAL", "Entering error handler; LED blink")
+    gc.collect()  # Aggressive cleanup before diagnostics
     memory_monitor.print_diagnostics()
     error_log.print_stats()
-    _handle_led_pattern("error")
+    _handle_led_pattern(LED_ERROR)
 
 
 def _process_mqtt_cycle(current_time):
@@ -370,7 +376,7 @@ def _attempt_reconnect(current_time, last_reconnect_attempt, backoff):
     if current_time - last_reconnect_attempt <= backoff:
         return last_reconnect_attempt, backoff
 
-    error_log.log_error("MQTT", f"Attempting to reconnect (backoff: {backoff}s)")
+    error_log.log_error("MQTT", "Attempting to reconnect", str(backoff))
     if connect_mqtt():
         error_log.log_error("MQTT", "Reconnection successful")
         return current_time, MQTT_RECONNECT_BACKOFF_INIT
@@ -381,7 +387,8 @@ def _attempt_reconnect(current_time, last_reconnect_attempt, backoff):
     backoff += jitter
     error_log.log_error(
         "MQTT",
-        f"Reconnection failed, next attempt in {backoff}s (jitter {jitter}s)"
+        "Reconnection failed",
+        str(backoff) + "s jitter " + str(jitter)
     )
     return last_reconnect_attempt, backoff
 
@@ -390,18 +397,21 @@ def main():
     global wdt
     
     try:
-        led_scheduler.start_pattern("boot")
+        led_scheduler.start_pattern(LED_BOOT)
         error_log.log_error("STARTUP", "Application starting")
         error_log.print_stats()
         memory_monitor.print_diagnostics()
 
         gc.enable()
+        gc.collect()  # Initial cleanup
 
         connect_wifi()
+        gc.collect()  # Cleanup after WiFi
 
         if not connect_mqtt():
             raise RuntimeError('Failed to connect to MQTT')
 
+        gc.collect()  # Cleanup before main loop
         # Initialize hardware watchdog
         wdt = _init_watchdog()
 
