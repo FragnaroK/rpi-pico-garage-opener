@@ -1,7 +1,7 @@
 import gc
 import machine
 import time
-from error_logger import error_log
+from runtime.error_logger import error_log
 
 class MemoryMonitor:
     """Monitor and manage memory usage on Pico W with Auto-Reboot

@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-Quick Configuration Setup for Pico W Garage Opener
+Quick Configuration Setup for Pico W Garage Opener (moved to tools/dev)
 
-Run this script via REPL on the Pico if you're having WiFi/config issues.
-This ensures /config.json is created with your settings.
+Call `main()` from REPL or run this module to configure the device.
 """
 
 import json
 
-def setup_config():
+
+def main():
     print("\n" + "="*60)
     print("PICO W GARAGE OPENER - CONFIGURATION SETUP")
     print("="*60)
@@ -79,5 +79,6 @@ def setup_config():
         print(f"\n✗ Failed to save config: {e}")
         return False
 
+
 if __name__ == '__main__':
-    setup_config()
+    main()

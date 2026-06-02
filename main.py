@@ -1,16 +1,16 @@
 import machine
 from time import sleep, time
 import network
-from umqtt.simple import MQTTClient
-import config
+from lib.umqtt import MQTTClient
+import runtime.config as config
 import gc
 import random
-from error_logger import error_log
-from memory_monitor import memory_monitor
-import mqtt_manager
-import lib.ugit.ugit as ugit
+from runtime.error_logger import error_log
+from runtime.memory_monitor import memory_monitor
+import runtime.mqtt_manager as mqtt_manager
+import lib.ugit as ugit
 from lib.led import led
-from led_scheduler import led_scheduler
+from runtime.led_scheduler import led_scheduler
 
 # --- MQTT Topics base
 
@@ -237,6 +237,123 @@ def manage_memory(current_time):
     except Exception:
         pass
 
+def _init_watchdog():
+    """Initialize hardware watchdog; returns wdt object or None on failure"""
+    try:
+        wdt_timeout = WATCHDOG_TIMEOUT_MS
+        if WATCHDOG_TIMEOUT_MS > MAX_WDT_TIMEOUT_MS:
+            error_log.log_error(
+                "WATCHDOG",
+                f"Requested WDT timeout {WATCHDOG_TIMEOUT_MS}ms exceeds max {MAX_WDT_TIMEOUT_MS}ms; clamping to {MAX_WDT_TIMEOUT_MS}ms"
+            )
+            wdt_timeout = MAX_WDT_TIMEOUT_MS
+
+        try:
+            wdt = machine.WDT(timeout=wdt_timeout)
+            error_log.log_error("WATCHDOG", f"WDT started ({wdt_timeout}ms)")
+            return wdt
+        except ValueError:
+            try:
+                wdt = machine.WDT(timeout=MAX_WDT_TIMEOUT_MS)
+                error_log.log_error("WATCHDOG", f"WDT started with fallback timeout ({MAX_WDT_TIMEOUT_MS}ms)")
+                return wdt
+            except Exception as e:
+                error_log.log_exception(e, "init_wdt")
+                return None
+    except Exception as e:
+        error_log.log_exception(e, "init_wdt")
+        return None
+
+def _handle_network_unavailable():
+    """Handle WiFi disconnection and reconnection"""
+    error_log.log_error("WIFI", "WiFi connection lost, reconnecting...")
+    led_scheduler.start_pattern("wifi_connecting")
+    disconnect_mqtt()
+    connect_wifi()
+    if not connect_mqtt():
+        error_log.log_error("MQTT", "Failed to reconnect after WiFi recovery")
+
+def _run_main_loop():
+    """Main event loop"""
+    global last_message_time, consecutive_mqtt_errors, mqtt_reconnect_backoff, last_gc_time
+    
+    last_reconnect_attempt = time()
+    mqtt_reconnect_backoff = MQTT_RECONNECT_BACKOFF_INIT
+
+    while True:
+        try:
+            current_time = time()
+            led_scheduler.update()
+
+            if not is_network_available():
+                _handle_network_unavailable()
+                continue
+
+            manage_memory(current_time)
+
+            try:
+                _process_mqtt_cycle(current_time)
+            except OSError as e:
+                consecutive_mqtt_errors += 1
+                error_log.log_error("MQTT_ERROR", f"OSError (count: {consecutive_mqtt_errors})", str(e))
+                if consecutive_mqtt_errors >= MQTT_ERROR_THRESHOLD:
+                    error_log.log_error("MQTT", "Too many errors, forcing reconnect")
+                    disconnect_mqtt()
+                    consecutive_mqtt_errors = 0
+                raise
+
+            # Sleep 1 second while keeping LED scheduler active
+            for _ in range(10):
+                led_scheduler.update()
+                sleep(0.1)
+
+        except Exception as e:
+            error_log.log_exception(e, "message_check")
+            current_time = time()
+            last_reconnect_attempt, mqtt_reconnect_backoff = _attempt_reconnect(
+                current_time,
+                last_reconnect_attempt,
+                mqtt_reconnect_backoff,
+            )
+            # Sleep with scheduler updates
+            for _ in range(10):
+                led_scheduler.update()
+                sleep(0.1)
+
+def _handle_led_pattern(pattern_name):
+    """Attempt to display LED pattern with fallback"""
+    try:
+        led_scheduler.start_pattern(pattern_name)
+        while True:
+            led_scheduler.update()
+            sleep(0.1)
+    except Exception as sched_err:
+        error_log.log_exception(sched_err, "led_scheduler_failure")
+        error_log.log_error("CRITICAL", "LED scheduler failed, using direct LED control")
+        _handle_direct_led()
+
+def _handle_direct_led():
+    """Direct LED blink as fallback when scheduler fails"""
+    try:
+        while True:
+            led.on()
+            sleep(0.5)
+            led.off()
+            sleep(0.5)
+    except Exception as led_err:
+        error_log.log_exception(led_err, "led_direct_failure")
+        # Give up - just hang
+        while True:
+            sleep(1)
+
+def _handle_critical_error(e):
+    """Handle critical errors during startup"""
+    error_log.log_exception(e, "main")
+    error_log.log_error("CRITICAL", "Entering error handler - attempting LED blink")
+    memory_monitor.print_diagnostics()
+    error_log.print_stats()
+    _handle_led_pattern("error")
+
 
 def _process_mqtt_cycle(current_time):
     global last_message_time, consecutive_mqtt_errors
@@ -270,7 +387,6 @@ def _attempt_reconnect(current_time, last_reconnect_attempt, backoff):
 
 
 def main():
-    global client, last_message_time, last_gc_time, consecutive_mqtt_errors, mqtt_reconnect_backoff
     global wdt
     
     try:
@@ -286,105 +402,13 @@ def main():
         if not connect_mqtt():
             raise RuntimeError('Failed to connect to MQTT')
 
-        # Initialize hardware watchdog to help recover from hangs
-        try:
-            wdt_timeout = WATCHDOG_TIMEOUT_MS
-            if WATCHDOG_TIMEOUT_MS > MAX_WDT_TIMEOUT_MS:
-                error_log.log_error(
-                    "WATCHDOG",
-                    f"Requested WDT timeout {WATCHDOG_TIMEOUT_MS}ms exceeds max {MAX_WDT_TIMEOUT_MS}ms; clamping to {MAX_WDT_TIMEOUT_MS}ms"
-                )
-                wdt_timeout = MAX_WDT_TIMEOUT_MS
+        # Initialize hardware watchdog
+        wdt = _init_watchdog()
 
-            try:
-                wdt = machine.WDT(timeout=wdt_timeout)
-                error_log.log_error("WATCHDOG", f"WDT started ({wdt_timeout}ms)")
-            except ValueError:
-                try:
-                    wdt = machine.WDT(timeout=MAX_WDT_TIMEOUT_MS)
-                    error_log.log_error("WATCHDOG", f"WDT started with fallback timeout ({MAX_WDT_TIMEOUT_MS}ms)")
-                except Exception as e:
-                    error_log.log_exception(e, "init_wdt")
-                    wdt = None
-        except Exception as e:
-            error_log.log_exception(e, "init_wdt")
-
-        last_reconnect_attempt = time()
-        last_gc_time = time()
-        mqtt_reconnect_backoff = MQTT_RECONNECT_BACKOFF_INIT
-
-        while True:
-            try:
-                current_time = time()
-                led_scheduler.update()
-
-                if not is_network_available():
-                    error_log.log_error("WIFI", "WiFi connection lost, reconnecting...")
-                    led_scheduler.start_pattern("wifi_connecting")
-                    disconnect_mqtt()
-                    connect_wifi()
-                    if not connect_mqtt():
-                        error_log.log_error("MQTT", "Failed to reconnect after WiFi recovery")
-                    continue
-
-                manage_memory(current_time)
-
-                try:
-                    _process_mqtt_cycle(current_time)
-                except OSError as e:
-                    consecutive_mqtt_errors += 1
-                    error_log.log_error("MQTT_ERROR", f"OSError (count: {consecutive_mqtt_errors})", str(e))
-                    if consecutive_mqtt_errors >= MQTT_ERROR_THRESHOLD:
-                        error_log.log_error("MQTT", "Too many errors, forcing reconnect")
-                        disconnect_mqtt()
-                        consecutive_mqtt_errors = 0
-                    raise
-
-                # Sleep 1 second while keeping LED scheduler active
-                for _ in range(10):
-                    led_scheduler.update()
-                    sleep(0.1)
-
-            except Exception as e:
-                error_log.log_exception(e, "message_check")
-                current_time = time()
-                last_reconnect_attempt, mqtt_reconnect_backoff = _attempt_reconnect(
-                    current_time,
-                    last_reconnect_attempt,
-                    mqtt_reconnect_backoff,
-                )
-                # Sleep with scheduler updates
-                for _ in range(10):
-                    led_scheduler.update()
-                    sleep(0.1)
+        _run_main_loop()
 
     except Exception as e:
-        error_log.log_exception(e, "main")
-        error_log.log_error("CRITICAL", "Entering error handler - attempting LED blink")
-        memory_monitor.print_diagnostics()
-        error_log.print_stats()
-        
-        # Try scheduler first, with direct LED fallback
-        try:
-            led_scheduler.start_pattern("error")
-            while True:
-                led_scheduler.update()
-                sleep(0.1)
-        except Exception as sched_err:
-            error_log.log_exception(sched_err, "led_scheduler_failure")
-            # Direct LED control as fallback
-            error_log.log_error("CRITICAL", "LED scheduler failed, using direct LED control")
-            try:
-                while True:
-                    led.on()
-                    sleep(0.5)
-                    led.off()
-                    sleep(0.5)
-            except Exception as led_err:
-                error_log.log_exception(led_err, "led_direct_failure")
-                # Give up - just hang
-                while True:
-                    sleep(1)
+        _handle_critical_error(e)
 
 if __name__ == '__main__':
     main()

@@ -23,12 +23,19 @@ A MicroPython-based remote garage door control system for the Raspberry Pi Pico 
 .
 ├── boot.py                    # Minimal startup initialization
 ├── main.py                    # Main application runtime
-├── config.py                  # Runtime config loader (reads /config.json or .env)
-├── config_generator.py        # One-time config generator from .env
-├── error_logger.py            # Circular log buffer with file persistence
-├── memory_monitor.py          # Memory usage tracking and auto-reboot
-├── mqtt_manager.py            # MQTT client wrapper with robust reconnect
-├── led_scheduler.py           # Non-blocking LED pattern manager
+├── runtime/                   # Runtime modules
+│   ├── __init__.py            # runtime package initializer
+│   ├── config.py              # Runtime config loader (reads /config.json or .env)
+│   ├── error_logger.py        # Circular log buffer with file persistence
+│   ├── memory_monitor.py      # Memory usage tracking and auto-reboot
+│   ├── mqtt_manager.py        # MQTT client wrapper with robust reconnect
+│   └── led_scheduler.py       # Non-blocking LED pattern manager
+├── tools/                     # Utility scripts
+│   ├── dev/                   # Development utilities (run on workstation or Thonny)
+│   │   ├── config_generator.py # One-time config generator from .env
+│   │   ├── test_led.py        # LED diagnostic runner
+│   │   └── setup_config.py    # Interactive config helper
+│   └── runtime/               # Runtime helpers (device-side tools)
 ├── lib/
 │   ├── led.py                 # LED control and patterns
 │   ├── dotenv/                # Dotenv parser
@@ -61,7 +68,7 @@ Run the config generator **once** on the Pico to create `/config.json`:
 
 #### Option A: Using Thonny
 
-1. Open `config_generator.py` in Thonny
+1. Open `tools/dev/config_generator.py` in Thonny
 2. Ensure `.env` is on the Pico (via file transfer)
 3. Run the script
 4. Check the output and confirm `/config.json` was created
@@ -69,7 +76,7 @@ Run the config generator **once** on the Pico to create `/config.json`:
 #### Option B: Using REPL
 
 ```python
-import config
+import runtime.config as config
 config.create_config(
     ssid='your_wifi_name',
     password='your_wifi_password',
@@ -180,7 +187,7 @@ error_log.print_stats()
 ### Device Doesn't Connect to WiFi
 
 1. Check LED patterns (should see steady blink if connecting)
-2. Verify SSID/password in `.env` or via `config.py`
+2. Verify SSID/password in `.env` or via `runtime.config.py`
 3. Check WiFi signal strength at the device location
 4. Inspect `error_log.txt` for WiFi errors
 

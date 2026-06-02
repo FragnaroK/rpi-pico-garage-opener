@@ -1,4 +1,4 @@
-import lib.ugit.ugit as ugit
+import lib.ugit as ugit
 
 REQUIRED_KEYS = [
     "WIFI_SSID",
@@ -11,7 +11,7 @@ REQUIRED_KEYS = [
     "MQTT_PASSWORD",
 ]
 
-IGNORE_FILES = ["/lib/ugit/ugit.py", "/.env"]
+IGNORE_FILES = ["/lib/ugit.py", "/.env"]
 
 
 def _load_env(filepath='.env'):

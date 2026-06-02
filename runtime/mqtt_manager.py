@@ -1,7 +1,7 @@
 import time
 import gc
-from umqtt.simple import MQTTClient
-from error_logger import error_log
+from lib.umqtt import MQTTClient
+from runtime.error_logger import error_log
 
 DEFAULT_STATUS_SUFFIX = b'/status'
 ERROR_NOT_CONNECTED = 'Not connected'
@@ -133,7 +133,7 @@ class MQTTManager:
 
     def publish(self, topic, msg, retain=False, qos=0):
         if not self.client:
-            raise OSError('Not connected')
+            raise OSError(ERROR_NOT_CONNECTED)
         return self.client.publish(topic, msg, retain=retain, qos=qos)
 
     def _send_keepalive_ping(self):
@@ -171,7 +171,7 @@ class MQTTManager:
     def subscribe_safe(self, topic):
         """Subscribe with error handling; returns success status."""
         if not self.is_connected():
-            self.last_error = 'Not connected'
+            self.last_error = ERROR_NOT_CONNECTED
             return False
         try:
             self.client.subscribe(topic)
@@ -183,7 +183,7 @@ class MQTTManager:
     def publish_safe(self, topic, msg, retain=False, qos=0):
         """Publish with error handling; returns success status."""
         if not self.is_connected():
-            self.last_error = 'Not connected'
+            self.last_error = ERROR_NOT_CONNECTED
             return False
         try:
             self.client.publish(topic, msg, retain=retain, qos=qos)
