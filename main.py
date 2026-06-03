@@ -327,10 +327,17 @@ def _run_main_loop():
 
 def _handle_led_pattern(pattern_name):
     """Attempt to display LED pattern with fallback"""
+    global wdt
     try:
         led_scheduler.start_pattern(pattern_name)
         while True:
             led_scheduler.update()
+            # Feed watchdog even in error state to allow recovery
+            try:
+                if wdt is not None:
+                    wdt.feed()
+            except Exception:
+                pass
             sleep(0.1)
     except Exception as sched_err:
         error_log.log_exception(sched_err, "led_scheduler_failure")
@@ -354,12 +361,56 @@ def _handle_direct_led():
 
 def _handle_critical_error(e):
     """Handle critical errors during startup"""
+    global wdt
     error_log.log_exception(e, "main")
     error_log.log_error("CRITICAL", "Entering error handler; LED blink")
     gc.collect()  # Aggressive cleanup before diagnostics
     memory_monitor.print_diagnostics()
     error_log.print_stats()
-    _handle_led_pattern(LED_ERROR)
+    
+    # Try to recover from WiFi/MQTT connection errors for up to 60 seconds
+    error_start = time()
+    error_recovery_timeout = 60
+    recovery_attempt = 0
+    
+    while True:
+        try:
+            # Feed watchdog to prevent immediate reset
+            if wdt is not None:
+                wdt.feed()
+        except Exception:
+            pass
+        
+        elapsed = time() - error_start
+        if elapsed > error_recovery_timeout:
+            error_log.log_error("CRITICAL", "Error timeout; forcing reset")
+            try:
+                led.off()
+            except Exception:
+                pass
+            sleep(1)
+            machine.reset()
+        
+        # Attempt recovery every 15 seconds
+        if elapsed % 15 < 1 and recovery_attempt < 4:
+            recovery_attempt += 1
+            error_log.log_error("CRITICAL", f"Recovery attempt {recovery_attempt}")
+            try:
+                led_scheduler.start_pattern(LED_WIFI_CONNECTING)
+                connect_wifi()
+                if connect_mqtt():
+                    error_log.log_error("CRITICAL", "Recovery successful!")
+                    _run_main_loop()
+            except Exception as recovery_err:
+                error_log.log_exception(recovery_err, "error_recovery")
+                led_scheduler.start_pattern(LED_ERROR)
+        
+        # Show error LED
+        try:
+            led_scheduler.update()
+        except Exception:
+            pass
+        sleep(0.1)
 
 
 def _process_mqtt_cycle(current_time):
